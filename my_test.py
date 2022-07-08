@@ -1,3 +1,12 @@
+'''
+Copyright (c) 2022 by Haiming Zhang. All Rights Reserved.
+
+Author: Haiming Zhang
+Date: 2022-07-08 16:52:05
+Email: haimingzhang@link.cuhk.edu.cn
+Description: The test demo script without GUI.
+'''
+
 from models.face_encoder_res50 import FaceEncoder
 from models.face_decoder import Face3D
 from utils.cv import tensor2img
@@ -108,12 +117,16 @@ def Preprocess(img, lm):
     return img_new, lm_affine, mat
 
 
+def scan_image_folder(input_folder):
+    return [file for file in os.listdir(input_folder) if file.endswith((".png", ".jpg"))]
+    
+
 class Test():
     def __init__(self):
         device = 'cuda:0'
         self.img_root = './input/'
         self.ldmk_root = './ldmk/'
-        self.img_lst = os.listdir(self.img_root)
+        self.img_lst = scan_image_folder(self.img_root)
         print(f"the testing images is {self.img_lst}")
 
         device_ids = [0]
@@ -132,7 +145,6 @@ class Test():
 
         self.data = {}
         self.title = 'show'
-        cv2.namedWindow(self.title)
         with open('./ckpts/expression_mu_std.pkl', 'rb') as f:
             exp = pickle.load(f)
         self.std = exp['std']
@@ -152,21 +164,6 @@ class Test():
         self.stop = False
         self.noise = torch.rand(1, 1, 256, 256)
         # self.generator#.eval()
-
-    def create_trackbars(self):
-        def create_callback(idx):
-            def callback(val):
-                value = self.coeff_clone[0, idx]
-                self.data['coeff'][0, idx] = value + (val - 10) * self.step_sz[idx]
-                self.de_mask()
-
-            return callback
-
-        for idx in self.top_idx[: 30]:
-            value = self.data['coeff'][0, idx]
-            location = (value - self.mu[idx] + 3 * self.std[idx]) / self.step_sz[idx]
-            location = int(location)
-            cv2.createTrackbar('{}'.format(idx), self.title, location, 20, create_callback(idx))
 
     def load_data(self, name):
         img_pth = os.path.join(self.img_root, name)
@@ -194,7 +191,6 @@ class Test():
         if not os.path.exists(seg_pth):
             cv2.imwrite(seg_pth, seg)
 
-
         return img_init, img, img_tensor, seg, coeff, mask, mat_inv
 
     def seamless(self, src, dst, mask):
@@ -220,65 +216,49 @@ class Test():
         recon_show = tensor2img(torch.clamp(recon+1-out['mask'], 0, 1))
         I_de_occ = (img_tensor * (1 - mask) + self.noise).cuda()
         occ_recon = torch.cat((I_de_occ, recon, mask), dim=1)
-        inpaint = self.generator(occ_recon)
+        inpaint = self.generator(occ_recon) # (1, 3, 256, 256)
+        print(mat, mat.shape)
+
         inpaint_show = tensor2img(inpaint)
-        inpaint_show = cv2.warpAffine(inpaint_show, mat, (256, 256),borderValue=(255,255,255))
+
+        inpaint_show = cv2.warpAffine(inpaint_show, mat, (256, 256), borderValue=(255,255,255))
         recon_show = cv2.warpAffine(recon_show, mat, (256, 256), borderValue=(255,255,255))
         inpaint_show = img_init*(1-seg[...,np.newaxis]//255) + inpaint_show*(seg[...,np.newaxis]//255)
         inpaint_show[-1,:,:] = np.array([255, 255, 255])
         # inpaint_show = self.seamless(inpaint_show, img_init, seg)
+
         self.data['inpaint_show'] = inpaint_show
         self.data['recon_show'] = recon_show
         self.data['show'] = np.concatenate((img_init, recon_show, inpaint_show), axis=1)
 
     def forward(self):
+        os.makedirs("animation/res/", exist_ok=True)
+        os.makedirs("animation/3D/", exist_ok=True)
+        os.makedirs("animation/ldmk/", exist_ok=True)
+
+        count = 0
         for name in self.img_lst:
-            cv2.namedWindow(self.title)
             img_init, img, img_tensor, seg, coeff, mask, mat = self.load_data(name)
+
             self.data = {'I': img, 'I_t': img_tensor, 'mask': mask, 'seg': seg, 'coeff': coeff, 'img_init': img_init, 'mat': mat}
             self.noise = torch.rand_like(mask)
-            self.coeff_clone = coeff.clone()
-            self.create_trackbars()
+            
+            ## Forward the data
             self.de_mask()
-            count = 0
-            while True:
-                show = self.data['show'][..., ::-1]
-                cv2.imshow(self.title, show)
-                key = cv2.waitKey(5)
-                if key == ord('q'):
-                    self.stop = True
-                    break
-                elif key == ord('n'):
-                    cv2.destroyWindow(self.title)
-                    break
-                if key == ord('r'):
-                    self.noise = torch.rand_like(mask)
-                    self.de_mask()
-                if key == ord('d'):
-                    self.data['coeff']= self.coeff_clone.clone()
-                    cv2.destroyWindow(self.title)
-                    cv2.namedWindow(self.title)
-                    self.create_trackbars()
-                    self.de_mask()
-                if key == ord('s'):
-                    sv_name = name.split('.')[0]+'_{}.png'.format(count)
-                    img_pth = os.path.join('animation/res/', sv_name)
-                    cv2.imwrite(img_pth, self.data['inpaint_show'][...,::-1])
-                    rec_pth = os.path.join('animation/3D/', sv_name)
-                    cv2.imwrite(rec_pth, self.data['recon_show'][...,::-1])
+            sv_name = name.split('.')[0]+'_{}.png'.format(count)
+            img_pth = os.path.join('animation/res/', sv_name)
+            cv2.imwrite(img_pth, self.data['inpaint_show'][...,::-1])
 
-                    ldmk_sv_name = name.split('.')[0]+'_{}.txt'.format(count)
-                    ldmk_pth = os.path.join('animation/ldmk/', ldmk_sv_name)
-                    np.savetxt(ldmk_pth, self.data['ldmk'])
-                    count += 1
-                    # cv2.imwrite('output_ours/{}'.format(name), self.data['inpaint_show'][...,::-1])
+            rec_pth = os.path.join('animation/3D/', sv_name)
+            cv2.imwrite(rec_pth, self.data['recon_show'][...,::-1])
 
-            if self.stop:
-                break
-
-            # if key == ord('s'):
+            ldmk_sv_name = name.split('.')[0]+'_{}.txt'.format(count)
+            ldmk_pth = os.path.join('animation/ldmk/', ldmk_sv_name)
+            np.savetxt(ldmk_pth, self.data['ldmk'])
+            count += 1
 
 
 if __name__ == '__main__':
     tester = Test()
     tester.forward()
+
