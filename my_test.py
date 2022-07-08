@@ -164,22 +164,38 @@ class Test():
         self.stop = False
         self.noise = torch.rand(1, 1, 256, 256)
         # self.generator#.eval()
+    
+    def load_landmarks(self, lm_path):
+        if lm_path.endswith(".pkl"):
+            with open(lm_path, 'rb') as f:
+                landmark = pickle.load(f)
+        elif lm_path.endswith(".txt"):
+            landmark = np.loadtxt(lm_path)
+        elif lm_path.endswith(".npy"):
+            landmark = np.load(lm_path)
+        else:
+            raise ValueError("Unknown file type")
+        return landmark
 
     def load_data(self, name):
         img_pth = os.path.join(self.img_root, name)
-        img_init = cv2.imread(img_pth)[..., ::-1]
+        img_init = cv2.imread(img_pth)[..., ::-1] # to RGB
+        
         ldmk_name = name.split('.')[0] + '.pkl'
         ldmk_pth = os.path.join(self.ldmk_root, ldmk_name)
-        with open(ldmk_pth, 'rb') as f:
-            ldmk = pickle.load(f)
+        if not os.path.exists(ldmk_pth):
+            ldmk_pth = ldmk_pth.replace('.pkl', '.txt')
+
+        ldmk = self.load_landmarks(ldmk_pth)
 
         img, _, mat = Preprocess(img_init, ldmk)
         mat_inv = np.array([[1 / mat[0, 0], 0, -mat[0, 2] / mat[0, 0]],
                             [0, 1 / mat[1, 1], -mat[1, 2] / mat[1, 1]]])
 
         img_tensor = img2tensor(img).cuda()
+        
         coeff, seg1, seg2, seg3 = self.face_encoder(img_tensor)
-        # verts, tex, id_coeff, ex_coeff, tex_coeff, gamma, ldmk_pred = self.face_decoder(coeff)
+
         mask = (torch.sigmoid(seg1) > 0.1).type(torch.float32)
         mask = tensor_dilate(mask, 5)
         mask = tensor_dilate(mask, 3)
@@ -189,9 +205,16 @@ class Test():
         seg = cv2.warpAffine(seg, mat_inv, (256, 256)) * 255
 
         if not os.path.exists(seg_pth):
+            # save the face mask binary image
             cv2.imwrite(seg_pth, seg)
 
-        return img_init, img, img_tensor, seg, coeff, mask, mat_inv
+        data_dict = {'I': img, 'I_t': img_tensor, 
+                     'mask': mask, 'seg': seg, 
+                     'coeff': coeff, 
+                     'img_init': img_init, 
+                     'mat': mat_inv}
+
+        return data_dict
 
     def seamless(self, src, dst, mask):
         x, y, W, H = cv2.boundingRect(mask)
@@ -208,22 +231,23 @@ class Test():
 
         verts, tex, id_coeff, ex_coeff, tex_coeff, gamma, ldmk_pred = self.face_decoder(coeff)
         out = self.renderer(verts, self.tri, size=256, colors=tex, gamma=gamma, front_mask=None)
+        
         recon = out['rgb']
         ldmk_np = ldmk_pred.squeeze().cpu().detach().numpy()
         ldmk_np = np.concatenate((ldmk_np, np.ones((68, 1))), axis=1).dot(mat.T)
         self.data['ldmk'] = ldmk_np
 
-        recon_show = tensor2img(torch.clamp(recon+1-out['mask'], 0, 1))
+        recon_show = tensor2img(torch.clamp(recon + 1 - out['mask'], 0, 1))
         I_de_occ = (img_tensor * (1 - mask) + self.noise).cuda()
-        occ_recon = torch.cat((I_de_occ, recon, mask), dim=1)
-        inpaint = self.generator(occ_recon) # (1, 3, 256, 256)
-        print(mat, mat.shape)
+        occ_recon = torch.cat((I_de_occ, recon, mask), dim=1) # (1, 7, 256, 256)
+        
+        inpaint = self.generator(occ_recon) # get final result (1, 3, 256, 256)
 
         inpaint_show = tensor2img(inpaint)
 
         inpaint_show = cv2.warpAffine(inpaint_show, mat, (256, 256), borderValue=(255,255,255))
         recon_show = cv2.warpAffine(recon_show, mat, (256, 256), borderValue=(255,255,255))
-        inpaint_show = img_init*(1-seg[...,np.newaxis]//255) + inpaint_show*(seg[...,np.newaxis]//255)
+        inpaint_show = img_init*(1 - seg[...,np.newaxis]//255) + inpaint_show*(seg[...,np.newaxis]//255)
         inpaint_show[-1,:,:] = np.array([255, 255, 255])
         # inpaint_show = self.seamless(inpaint_show, img_init, seg)
 
@@ -238,10 +262,8 @@ class Test():
 
         count = 0
         for name in self.img_lst:
-            img_init, img, img_tensor, seg, coeff, mask, mat = self.load_data(name)
-
-            self.data = {'I': img, 'I_t': img_tensor, 'mask': mask, 'seg': seg, 'coeff': coeff, 'img_init': img_init, 'mat': mat}
-            self.noise = torch.rand_like(mask)
+            self.data = self.load_data(name)
+            self.noise = torch.rand_like(self.data['mask'])
             
             ## Forward the data
             self.de_mask()
