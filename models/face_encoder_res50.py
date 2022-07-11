@@ -204,9 +204,11 @@ class FaceEncoder(nn.Module):
         feat_out = F.interpolate(feat_out, (H, W), mode='bilinear', align_corners=True)
         feat_out8 = F.interpolate(feat_out8, (H, W), mode='bilinear', align_corners=True)
         feat_out16 = F.interpolate(feat_out16, (H, W), mode='bilinear', align_corners=True)
+        
         feat16 = self.gated(feat16)
         feat = self.feat.layer4(feat16)
         feat = self.avgpool(feat)
+        print(feat.shape)
         coeff = self.coeff(feat)
         return coeff.squeeze(2).squeeze(2), feat_out, feat_out8, feat_out16
 

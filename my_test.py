@@ -195,11 +195,13 @@ class Test():
         img_tensor = img2tensor(img).cuda()
         
         coeff, seg1, seg2, seg3 = self.face_encoder(img_tensor)
-
+        
+        ## Get the facial mask region
         mask = (torch.sigmoid(seg1) > 0.1).type(torch.float32)
         mask = tensor_dilate(mask, 5)
         mask = tensor_dilate(mask, 3)
         seg = tensor2img(mask) // 255
+        
         # seg = cv2.dilate(seg, np.ones((3, 3), np.uint8))
         seg_pth = os.path.join('mask/{}'.format(name))
         seg = cv2.warpAffine(seg, mat_inv, (256, 256)) * 255
